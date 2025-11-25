@@ -7,7 +7,8 @@
 # - Show the polynomial in descending powers (LaTeX)
 # - Optional y-axis limits to avoid extreme scaling
 # - Download CSV of sampled (x, y)
-# - NEW: Keep previous curves on the plot and a button to clear all
+# - Keep previous curves on the plot, with a button to clear all
+# - Legend shows coefficients [a_n, ..., a_0] including zeros
 #
 # Run locally:
 #   pip install streamlit numpy matplotlib pandas
@@ -23,9 +24,12 @@ import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Polynomial Plotter", page_icon="➗", layout="wide")
 
-# NEW: init session state for stored curves
+# -------------------------
+# Session state
+# -------------------------
+# Each curve is stored as:
+#   {"degree": int, "coeff_desc": List[float]}
 if "curves" not in st.session_state:
-    # each item: {"degree": int, "coeff_desc": List[float]}
     st.session_state["curves"] = []
 
 # -------------------------
@@ -72,12 +76,15 @@ def format_poly_latex(coeff_desc: List[float]) -> str:
 
 def parse_coeffs_from_text(txt: str, degree: int) -> List[float]:
     """Parse comma/space separated coefficients. Accept either
-    descending (a_n ... a_0) or ascending (a_0 ... a_n) if length matches.
-    If provided length < degree+1, pad with zeros on the *right* for ascending,
-    or on the *left* for descending (we try to guess orientation)."""
+    descending (a_n ... a_0) or ascending (a_0 ... a_n).
+    If length < degree+1, pad with zeros (assume ascending input)."""
     if not txt.strip():
         return [0.0] * (degree + 1)
-    raw = [t for t in txt.replace("\n", ",").replace(" ", ",").split(",") if t.strip() != ""]
+
+    raw = [
+        t for t in txt.replace("\n", ",").replace(" ", ",").split(",")
+        if t.strip() != ""
+    ]
     vals = []
     for r in raw:
         try:
@@ -85,28 +92,38 @@ def parse_coeffs_from_text(txt: str, degree: int) -> List[float]:
         except ValueError:
             # Ignore non-numeric tokens
             pass
+
     if not vals:
         return [0.0] * (degree + 1)
-    # If exact length, try to auto-detect orientation by comparing magnitudes
+
+    # If exact length, assume ascending a_0,...,a_n
     if len(vals) == degree + 1:
-        # Actually let's do a simpler, robust rule: assume user pasted ascending a0..an
-        coeff_desc = list(reversed(vals))
-        return coeff_desc
-    # If shorter, decide padding orientation by defaulting to ascending input
-    if len(vals) < degree + 1:
-        vals = vals + [0.0] * ((degree + 1) - len(vals))  # pad as ascending
         return list(reversed(vals))
-    # If longer than needed, trim
+
+    # If shorter, pad as ascending then reverse to descending
+    if len(vals) < degree + 1:
+        vals = vals + [0.0] * ((degree + 1) - len(vals))
+        return list(reversed(vals))
+
+    # If longer, trim then treat as ascending
     vals = vals[: degree + 1]
     return list(reversed(vals))
 
 
 def compute_poly_y(coeff_desc: List[float], x: np.ndarray) -> np.ndarray:
-    # numpy.polyval expects descending coefficients
+    """Evaluate polynomial (descending coeffs) at x."""
     c = np.array(coeff_desc, dtype=float)
     with np.errstate(over='ignore', invalid='ignore'):  # avoid warnings for huge values
         y = np.polyval(c, x)
     return y
+
+
+def make_coeff_label(coeff_desc: List[float]) -> str:
+    """
+    Return a label like [1, 0, -2, 5] (descending a_n,...,a_0),
+    zeros included.
+    """
+    return "[" + ", ".join(f"{c:g}" for c in coeff_desc) + "]"
 
 
 # -------------------------
@@ -118,7 +135,13 @@ st.caption("Input max degree and coefficients to plot y over [-100, 100] with st
 
 with st.sidebar:
     st.header("Settings")
-    degree = st.number_input("Maximum degree n", min_value=0, max_value=20, value=2, step=1)
+    degree = st.number_input(
+        "Maximum degree n",
+        min_value=0,
+        max_value=20,
+        value=2,
+        step=1
+    )
 
     input_mode = st.radio(
         "Coefficient input mode",
@@ -135,7 +158,9 @@ with st.sidebar:
         coeff_desc = []
         for p in range(int(degree), -1, -1):
             coeff = st.number_input(
-                f"aₙ for x^{p}" if p > 1 else ("aₙ for x" if p == 1 else "aₙ constant"),
+                f"Coefficient for x^{p}" if p > 1 else (
+                    "Coefficient for x" if p == 1 else "Constant term a_0"
+                ),
                 key=f"coeff_{p}",
                 value=0.0,
                 format="%g",
@@ -168,14 +193,13 @@ with st.sidebar:
             custom_ylim = False
 
     st.divider()
-    st.subheader("Curves")  # NEW section
+    st.subheader("Curves")
 
-    # NEW: buttons to add / clear curves
+    # Add / clear buttons for stored curves
     add_curve = st.button("➕ Add current polynomial to plot")
     clear_curves = st.button("🧹 Clear all curves")
 
     if add_curve:
-        # store a copy so future edits don't retroactively change old curves
         st.session_state["curves"].append(
             {
                 "degree": int(degree),
@@ -189,13 +213,13 @@ with st.sidebar:
 # Body
 col1, col2 = st.columns([3, 2], gap="large")
 
-# common x grid
+# Common x grid
 x = np.arange(-100.0, 100.0 + 1e-9, 0.1, dtype=float)
 
 with col1:
     st.subheader("Polynomial")
 
-    # Show current polynomial in LaTeX (the one you are editing now)
+    # Show current polynomial in LaTeX
     latex_str = format_poly_latex(coeff_desc)
     st.latex(r"y(x) = " + latex_str)
 
@@ -208,14 +232,16 @@ with col1:
         for idx, curve in enumerate(curves):
             c = curve["coeff_desc"]
             y_curve = compute_poly_y(c, x)
-            label = f"Curve {idx + 1}"
+            # Legend label = coefficients [a_n, ..., a_0], including 0
+            label = make_coeff_label(c)
             ax.plot(x, y_curve, label=label)
         ax.set_title("y = polynomial(x) (all stored curves)")
         ax.legend()
     else:
         # If no stored curves, show the current one as preview
         y_current = compute_poly_y(coeff_desc, x)
-        ax.plot(x, y_current, label="Current (not stored)")
+        label = make_coeff_label(coeff_desc)
+        ax.plot(x, y_current, label=label)
         ax.set_title("y = polynomial(x) (current preview)")
         ax.legend()
 
@@ -233,7 +259,7 @@ with col2:
     st.subheader("Data & Export")
     st.caption("Sampled at step = 0.1 in [-100, 100].")
 
-    # NEW: use last stored curve if any, otherwise current one
+    # Use last stored curve if any, otherwise current one
     if st.session_state["curves"]:
         active_coeff = st.session_state["curves"][-1]["coeff_desc"]
         st.caption("Stats & CSV for **last added curve**.")
@@ -274,5 +300,6 @@ with st.expander("Notes"):
         - **Curves**:
           - Use **“➕ Add current polynomial to plot”** to keep each line on the figure.
           - Use **“🧹 Clear all curves”** to reset the plot.
+        - **Legend**: Each curve's label is its coefficient vector $[a_n, \dots, a_0]$, including zeros.
         """
     )
